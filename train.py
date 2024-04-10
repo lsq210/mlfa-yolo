@@ -19,7 +19,7 @@ def train(args):
         'device': args.device,
     }
     seed_everything(SEED)
-    model = YOLO(args.model + '.yaml').load(path.join('pretrained', args.model + '.pt'))
+    model = YOLO(args.model + '.yaml').load(args.model + '.pt')
     mlfa_trainer = partial(MLFATrainer, target_domain_data_cfg=args.dataset_t)
     model.train(mlfa_trainer, data=args.dataset, name=args.name, patience=0, **deepcopy(kwargs))
     if not args.skip_val:
