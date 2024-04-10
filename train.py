@@ -16,6 +16,7 @@ def train(args):
         'workers': args.workers,
         'batch': args.batch,
         'seed': SEED,
+        'device': args.device,
     }
     seed_everything(SEED)
     model = YOLO(args.model + '.yaml').load(path.join('pretrained', args.model + '.pt'))

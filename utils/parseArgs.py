@@ -1,7 +1,6 @@
 
 import argparse
 
-
 def parseArgs():
     parser = argparse.ArgumentParser(description='Multi-Level Feature Alignment YOLO')
     parser.add_argument(
@@ -35,6 +34,7 @@ def parseArgs():
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch', default=32, type=int)
     parser.add_argument('--workers', default=8, type=int)
+    parser.add_argument('--device', default=0, type=int, help='device id (i.e. 0 or 0,1 or cpu)')
     parser.add_argument(
         "--skip-val",
         dest="skip_val",
