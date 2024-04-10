@@ -6,6 +6,6 @@ python train.py \
   --dataset_t data/nwpu.yaml \
   --model yolov8s \
   --imgsz 640 \
-  --batch 16 \
+  --batch 8 \
   --epochs 100 \
   --device 0
