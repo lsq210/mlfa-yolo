@@ -5,7 +5,7 @@ python train.py \
   --dataset data/gta.yaml \
   --dataset_t data/nwpu.yaml \
   --model yolov8s \
-  --imgsz 320 \
-  --batch 2 \
+  --imgsz 640 \
+  --batch 16 \
   --epochs 100 \
   --device 0

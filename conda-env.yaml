@@ -1,4 +1,4 @@
-name: /media/cstao/Others/codes/mlfa-yolo/.conda/mlfa-yolo
+name: mlfa-yolo
 channels:
   - pytorch
   - nvidia
@@ -279,4 +279,3 @@ dependencies:
   - yarl=1.9.3=py310h5eee18b_0
   - zlib=1.2.13=hd590300_5
   - zstd=1.5.5=hc292b87_0
-prefix: /media/cstao/Others/codes/mlfa-yolo/.conda/mlfa-yolo
