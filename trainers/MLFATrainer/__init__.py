@@ -19,12 +19,19 @@ class MLFATrainer(DetectionTrainer):
         self.t_trainset, self.t_testset = self.get_dataset_t(target_domain_data_cfg)
         self.t_iter = None
         self.t_train_loader = None
-        self.model_hook_handler = []
-        self.model_hook_layer_idx: list[int] = [2, 4, 6]
-        self.roi_size = list(reversed([20 * 2 ** i for i in range(len(self.model_hook_layer_idx))]))
+
+        self.feature_handler = []
+        self.feature_layer_idx: list[int] = [4, 6, 8]
+        self.feature_roi_size = [int(i * (self.args.imgsz / 640)) for i in [80, 40, 20]]
         self.model_hooked_features: None | list[torch.tensor] = None
-        self.discriminator_model = None
-        self.projection_model = None
+
+        self.targets_handler = []
+        self.targets_layer_idx: list[int] = [15, 18, 21]
+        self.targets_roi_size = [int(i * (self.args.imgsz / 640)) for i in [80, 40, 20]]
+        self.model_hooked_targets: None | list[torch.tensor] = None
+
+        self.feature_discriminator_model = None
+        self.targets_discriminator_model = None
         self.additional_models = []
         self.add_callback('on_train_start', self.init_helper_model)
 
@@ -39,10 +46,10 @@ class MLFATrainer(DetectionTrainer):
         return t_data["train"], t_data.get("val") or t_data.get("test")
 
     def init_helper_model(self, *args, **kwargs):
-        # self.amp will not be initialized from __init__, thus we need to initialize Dis here
-        self.discriminator_model = Discriminator(amp=self.amp).to(self.device)
-        self.additional_models.append(self.discriminator_model)
-        # self.projection_model = ProjectionHeads(n_heads=len(self.model_hook_layer_idx))
+        self.feature_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
+        self.targets_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
+        self.additional_models.append(self.feature_discriminator_model)
+        self.additional_models.append(self.targets_discriminator_model)
 
     def get_t_batch(self):
         if self.t_iter is None:
@@ -55,39 +62,62 @@ class MLFATrainer(DetectionTrainer):
             batch = next(self.t_iter)
         return batch
 
-    def activate_hook(self, layer_indices: list[int] = None):
-        if layer_indices is not None:
-            self.model_hook_layer_idx = layer_indices
-        self.model_hooked_features = [None for _ in self.model_hook_layer_idx]
-        self.model_hook_handler = \
-            [self.model.model[l].register_forward_hook(self.hook_fn(i)) for i, l in enumerate(self.model_hook_layer_idx)]
+    def activate_hook(self, feature_layer_indices: list[int] = None, targets_layer_indices: list[int] = None):
+        if feature_layer_indices is not None:
+            self.feature_layer_idx = feature_layer_indices
+        if targets_layer_indices is not None:
+            self.targets_layer_idx = targets_layer_indices
+        self.model_hooked_features = [None for _ in self.feature_layer_idx]
+        self.model_hooked_targets = [None for _ in self.targets_layer_idx]
+        self.feature_handler = \
+            [self.model.model[l].register_forward_hook(self.hook_fn('feature', i)) for i, l in enumerate(self.feature_layer_idx)]
+        self.targets_handler = \
+            [self.model.model[l].register_forward_hook(self.hook_fn('targets', i)) for i, l in enumerate(self.targets_layer_idx)]
 
     def deactivate_hook(self):
-        if self.model_hook_handler is not None:
-            for hook in self.model_hook_handler:
+        if self.feature_handler is not None:
+            for hook in self.feature_handler:
                 hook.remove()
             self.model_hooked_features = None
-            self.model_hook_handler = []
+            self.feature_handler = []
+        if self.targets_handler is not None:
+            for hook in self.targets_handler:
+                hook.remove()
+            self.model_hooked_targets = None
+            self.targets_handler = []
 
-    def hook_fn(self, hook_idx):
+    def hook_fn(self, featureOrTarget: str, hook_idx: int):
 
         def hook(m, i, o):
-            self.model_hooked_features[hook_idx] = o
+            if featureOrTarget == 'feature':
+                self.model_hooked_features[hook_idx] = o
+            else:
+                self.model_hooked_targets[hook_idx] = o
 
         return hook
 
-    def get_dis_output_from_hooked_features(self, batch):
-        if self.model_hooked_features is not None:
+    def get_dis_output_from_hooked_targets(self, batch):
+        if self.model_hooked_targets is not None:
             bbox_batch_idx = batch['batch_idx'].unsqueeze(-1)
             bbox = batch['bboxes']
             bbox = box_convert(bbox, 'cxcywh', 'xyxy')
             rois = []
-            for fidx, f in enumerate(self.model_hooked_features):
+            for fidx, f in enumerate(self.model_hooked_targets):
                 f_bbox = bbox * f.shape[-1]
                 f_bbox = torch.cat((bbox_batch_idx, f_bbox), dim=-1)
-                f_roi = roi_align(f, f_bbox.to(f.device), output_size=self.roi_size[fidx], aligned=True)
+                f_roi = roi_align(f, f_bbox.to(f.device), output_size=self.targets_roi_size[fidx], aligned=True)
                 rois.append(f_roi)
-            dis_output = self.discriminator_model(rois)
+            dis_output = self.targets_discriminator_model(rois)
+            return dis_output
+        else:
+            return None
+
+    def get_dis_output_from_hooked_features(self):
+        if self.model_hooked_features is not None:
+            features = []
+            for f in self.model_hooked_features:
+                features.append(f)
+            dis_output = self.feature_discriminator_model(features)
             return dis_output
         else:
             return None
@@ -166,7 +196,8 @@ class MLFATrainer(DetectionTrainer):
                 pbar = TQDM(enumerate(self.train_loader), total=nb)
             self.tloss = None
             self.optimizer.zero_grad()
-            source_critics, target_critics = None, None
+            source_feature_critics, target_feature_critics = None, None
+            source_targets_critics, target_targets_critics = None, None
             for i, batch in pbar:
                 self.run_callbacks('on_train_batch_start')
                 # Warmup
@@ -191,29 +222,37 @@ class MLFATrainer(DetectionTrainer):
                         else self.loss_items
 
                     # Custom code here
-                    # Get source domain features
-                    source_critics = self.get_dis_output_from_hooked_features(batch)
-                    # Get target domain features
-                    t_batch = self.get_t_batch()
-                    t_batch = self.preprocess_batch(t_batch)
-                    t_loss, t_loss_item = self.model(t_batch)
-                    target_critics = self.get_dis_output_from_hooked_features(t_batch)
+                    ## 图像级对齐
+                    source_feature_critics = self.get_dis_output_from_hooked_features()
+                    target_feature_critics = self.get_dis_output_from_hooked_features()
 
-                    self.loss += t_loss
+                    ## 目标级对齐
+                    source_targets_critics = self.get_dis_output_from_hooked_targets(batch)
+                    t_targets_batch = self.get_t_batch()
+                    t_targets_batch = self.preprocess_batch(t_targets_batch)
+                    t_targets_loss, t_targets_loss_item = self.model(t_targets_batch)
+                    target_targets_critics = self.get_dis_output_from_hooked_targets(t_targets_batch)
+                    self.loss += t_targets_loss
+
                     if 6 < epoch < self.args.epochs - 50:
-                        # Last 50 epochs are for OD only
-                        threshold = 20
-                        loss_d = (F.relu(torch.ones_like(source_critics) * threshold + source_critics)).mean()
-                        loss_d += (F.relu(torch.ones_like(target_critics) * threshold - target_critics)).mean()
+                        feature_threshold = 20
+                        loss_feature_d = (F.relu(torch.ones_like(source_feature_critics) * feature_threshold + source_feature_critics)).mean()
+                        loss_feature_d += (F.relu(torch.ones_like(target_feature_critics) * feature_threshold - target_feature_critics)).mean()
+
+                        targets_threshold = 20
+                        loss_targets_d = (F.relu(torch.ones_like(source_targets_critics) * targets_threshold + source_targets_critics)).mean()
+                        loss_targets_d += (F.relu(torch.ones_like(target_targets_critics) * targets_threshold - target_targets_critics)).mean()
                     else:
-                        loss_d = 0
-                    self.loss += loss_d * 2
+                        loss_feature_d = 0
+                        loss_targets_d = 0
+                    self.loss += loss_feature_d * 2
+                    self.loss += loss_targets_d * 2
 
                 # Backward
                 self.scaler.scale(self.loss).backward()
                 # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
                 if ni - last_opt_step >= self.accumulate:
-                    self.optimizer_step(optims=[self.discriminator_model.optim])
+                    self.optimizer_step(optims=[self.feature_discriminator_model.optim, self.targets_discriminator_model.optim])
                     last_opt_step = ni
 
                 # Log
@@ -225,8 +264,10 @@ class MLFATrainer(DetectionTrainer):
                         ('%11s' * 2 + '%11.4g' * (2 + loss_len)) %
                         (f'{epoch + 1}/{self.epochs}', mem, *losses, batch['cls'].shape[0], batch['img'].shape[-1]))
                     self.run_callbacks('on_batch_end')
-                    tb_module.WRITER.add_scalar('train/critic-source', source_critics.mean(), ni)
-                    tb_module.WRITER.add_scalar('train/critic-target', target_critics.mean(), ni)
+                    tb_module.WRITER.add_scalar('train/critic-feature-source', source_feature_critics.mean(), ni)
+                    tb_module.WRITER.add_scalar('train/critic-feature-target', target_feature_critics.mean(), ni)
+                    tb_module.WRITER.add_scalar('train/critic-targets-source', source_targets_critics.mean(), ni)
+                    tb_module.WRITER.add_scalar('train/critic-targets-target', target_targets_critics.mean(), ni)
                     if self.args.plots and ni in self.plot_idx:
                         self.plot_training_samples(batch, ni)
 

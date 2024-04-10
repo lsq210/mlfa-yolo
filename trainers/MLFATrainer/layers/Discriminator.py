@@ -50,8 +50,8 @@ class Discriminator(nn.Module):
         super().__init__()
         if chs is None:
             chs = [64, 128, 256]
-            self.chs = chs
-            self.f_len = len(chs)
+        self.chs = chs
+        self.f_len = len(chs)
         self.grl = GradientReversalLayer(alpha=1.0)
         self.amp = amp
         self.p = nn.ModuleList([
