@@ -8,4 +8,5 @@ python train.py \
   --imgsz 640 \
   --batch 8 \
   --epochs 100 \
-  --device 0
+  --device 0 \
+  --skip-ins-loss

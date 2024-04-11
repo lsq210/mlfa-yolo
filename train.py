@@ -9,6 +9,7 @@ from utils import parseArgs, seed_everything
 SEED = 20000108
 
 def train(args):
+    print('args:', args)
     kwargs = {
         'imgsz': args.imgsz,
         'epochs': args.epochs,
@@ -20,7 +21,12 @@ def train(args):
     }
     seed_everything(SEED)
     model = YOLO(args.model + '.yaml').load(args.model + '.pt')
-    mlfa_trainer = partial(MLFATrainer, target_domain_data_cfg=args.dataset_t)
+    mlfa_trainer = partial(
+        MLFATrainer,
+        target_domain_data_cfg=args.dataset_t,
+        skip_feat_loss=args.skip_feat_loss,
+        skip_ins_loss=args.skip_ins_loss
+    )
     model.train(mlfa_trainer, data=args.dataset, name=args.name, patience=0, **deepcopy(kwargs))
     if not args.skip_val:
         model.val(data=args.dataset_t, name=args.name)

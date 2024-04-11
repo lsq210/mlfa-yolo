@@ -14,8 +14,15 @@ from torchvision.ops import roi_align, box_convert
 from .layers import Discriminator
 
 class MLFATrainer(DetectionTrainer):
-    def __init__(self, target_domain_data_cfg, *args, **kwargs):
+    def __init__(self, target_domain_data_cfg, skip_feat_loss, skip_ins_loss,  *args, **kwargs):
         super(MLFATrainer, self).__init__(*args, **kwargs)
+        
+        self.skip_feat_loss = skip_feat_loss
+        self.skip_ins_loss = skip_ins_loss
+        if not self.skip_feat_loss:
+            print('[MLFATrainer] 🚀 training with feature align...')
+        if not self.skip_ins_loss:
+            print('[MLFATrainer] 🚗 training with instance align...')
         self.t_trainset, self.t_testset = self.get_dataset_t(target_domain_data_cfg)
         self.t_iter = None
         self.t_train_loader = None
@@ -46,8 +53,10 @@ class MLFATrainer(DetectionTrainer):
         return t_data["train"], t_data.get("val") or t_data.get("test")
 
     def init_helper_model(self, *args, **kwargs):
-        self.feature_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
-        self.instance_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
+        # self.feature_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
+        # self.instance_discriminator_model = Discriminator(chs = [128, 256, 512], amp=self.amp).to(self.device)
+        self.feature_discriminator_model = Discriminator(chs = [64, 128, 256], amp=self.amp).to(self.device)
+        self.instance_discriminator_model = Discriminator(chs = [64, 128, 256], amp=self.amp).to(self.device)
         self.additional_models.append(self.feature_discriminator_model)
         self.additional_models.append(self.instance_discriminator_model)
 
@@ -222,32 +231,34 @@ class MLFATrainer(DetectionTrainer):
                         else self.loss_items
 
                     # Custom code here
-                    ## 源域图像级对齐
-                    source_feature_critics = self.get_dis_output_from_hooked_features()
-                    ## 源域实例级对齐
-                    source_instance_critics = self.get_dis_output_from_hooked_instance(batch)
-                    t_batch = self.get_t_batch() # will update hooked features and instance
-                    t_batch = self.preprocess_batch(t_batch)
-                    t_loss, t_loss_item = self.model(t_batch)
-                    self.loss += t_loss
-                    ## 目标域实例级对齐
-                    target_feature_critics = self.get_dis_output_from_hooked_features()
-                    ## 目标域实例级对齐
-                    target_instance_critics = self.get_dis_output_from_hooked_instance(t_batch)
-
                     if 6 < epoch < self.args.epochs - 50:
+                        ## 源域图像级对齐
+                        source_feature_critics = self.get_dis_output_from_hooked_features()
+                        ## 源域实例级对齐
+                        source_instance_critics = self.get_dis_output_from_hooked_instance(batch)
+                        t_batch = self.get_t_batch() # will update hooked features and instance
+                        t_batch = self.preprocess_batch(t_batch)
+                        t_loss, t_loss_item = self.model(t_batch)
+                        self.loss += t_loss
+                        ## 目标域实例级对齐
+                        target_feature_critics = self.get_dis_output_from_hooked_features()
+                        ## 目标域实例级对齐
+                        target_instance_critics = self.get_dis_output_from_hooked_instance(t_batch)
+
                         feature_threshold = 20
                         loss_feature_d = (F.relu(torch.ones_like(source_feature_critics) * feature_threshold + source_feature_critics)).mean()
                         loss_feature_d += (F.relu(torch.ones_like(target_feature_critics) * feature_threshold - target_feature_critics)).mean()
 
                         targets_threshold = 20
-                        loss_targets_d = (F.relu(torch.ones_like(source_instance_critics) * targets_threshold + source_instance_critics)).mean()
-                        loss_targets_d += (F.relu(torch.ones_like(target_instance_critics) * targets_threshold - target_instance_critics)).mean()
+                        loss_instance_d = (F.relu(torch.ones_like(source_instance_critics) * targets_threshold + source_instance_critics)).mean()
+                        loss_instance_d += (F.relu(torch.ones_like(target_instance_critics) * targets_threshold - target_instance_critics)).mean()
                     else:
                         loss_feature_d = 0
-                        loss_targets_d = 0
-                    self.loss += loss_feature_d * 2
-                    self.loss += loss_targets_d * 2
+                        loss_instance_d = 0
+                    if not self.skip_feat_loss:
+                        self.loss += loss_feature_d * 2
+                    if not self.skip_ins_loss:
+                        self.loss += loss_instance_d * 2
 
                 # Backward
                 self.scaler.scale(self.loss).backward()
@@ -265,10 +276,14 @@ class MLFATrainer(DetectionTrainer):
                         ('%11s' * 2 + '%11.4g' * (2 + loss_len)) %
                         (f'{epoch + 1}/{self.epochs}', mem, *losses, batch['cls'].shape[0], batch['img'].shape[-1]))
                     self.run_callbacks('on_batch_end')
-                    tb_module.WRITER.add_scalar('train/critic-feature-source', source_feature_critics.mean(), ni)
-                    tb_module.WRITER.add_scalar('train/critic-feature-target', target_feature_critics.mean(), ni)
-                    tb_module.WRITER.add_scalar('train/critic-instance-source', source_instance_critics.mean(), ni)
-                    tb_module.WRITER.add_scalar('train/critic-instance-target', target_instance_critics.mean(), ni)
+                    if bool(source_feature_critics):
+                        tb_module.WRITER.add_scalar('train/critic-feature-source', source_feature_critics.mean(), ni)
+                    if bool(target_feature_critics):
+                        tb_module.WRITER.add_scalar('train/critic-feature-target', target_feature_critics.mean(), ni)
+                    if bool(source_instance_critics):
+                        tb_module.WRITER.add_scalar('train/critic-instance-source', source_instance_critics.mean(), ni)
+                    if bool(target_instance_critics):
+                        tb_module.WRITER.add_scalar('train/critic-instance-target', target_instance_critics.mean(), ni)
                     if self.args.plots and ni in self.plot_idx:
                         self.plot_training_samples(batch, ni)
 

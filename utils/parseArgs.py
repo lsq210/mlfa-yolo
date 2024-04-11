@@ -29,7 +29,17 @@ def parseArgs():
         help="model name in https://github.com/ultralytics/ultralytics/tree/main/ultralytics/cfg/models",
         type=str,
     )
-    
+    parser.add_argument(
+        "--skip-feat-loss",
+        dest="skip_feat_loss",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--skip-ins-loss",
+        dest="skip_ins_loss",
+        action="store_true",
+    )
+
     parser.add_argument('--imgsz', default=640, type=int)
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch', default=32, type=int)
